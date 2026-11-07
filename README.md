@@ -11,6 +11,13 @@ station → How to set up a Pi.)
   so don't set up Wi-Fi on the Pi.
 
 ## Install (once)
+0. **Get onto the Pi:** put Raspberry Pi OS on its SD card with **Raspberry Pi Imager**. In Imager's settings, set the name to
+   `evolink`, pick a username and password, turn on **SSH**, and leave Wi-Fi blank. Start the Pi with its cable in, then from
+   a computer (or an SSH app such as Termius on the phone):
+   ```
+   ssh yourname@evolink.local
+   ```
+   and type your password. No SSH? Plug a keyboard and screen into the Pi instead.
 1. **Turn on the Pi's Wi-Fi:** `sudo raspi-config` → Localisation Options → WLAN Country → your country.
 2. **Install:**
    ```
