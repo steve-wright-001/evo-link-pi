@@ -235,7 +235,11 @@ class Fake:
         return {'bytes': len(data)}
 
     def signal(self):
-        return {'rssi': None}    # the Pi's signal says nothing about where the Evo will go
+        # The Pi's link to the Shelly it's joined to, wandering a little as a real one does.
+        if not self.joined:
+            return {'rssi': None}
+        self.drift = max(-6, min(6, getattr(self, 'drift', 0) + random.choice((-1, 0, 1))))
+        return {'rssi': self.aps[self.joined]['level'] + self.drift}
 
     def cancel(self):
         self.cancelled = True
