@@ -28,10 +28,11 @@ import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = '0.1.0'
+VERSION = '0.3.0'
 PORT = 8710
 CON = 'evolink-shelly'   # the NetworkManager connection used for a Shelly's hotspot
 SHELLY_IP = '192.168.33.1'
+RAW = 'https://raw.githubusercontent.com/steve-wright-001/evo-link-pi/main'   # where updates come from
 
 
 class Err(Exception):
@@ -47,6 +48,7 @@ class Real:
         self.proc = None        # a running nmcli, so cancel() can stop it
         self.sock = None        # a label being sent, so cancel() can stop it
         self.cancelled = False
+        self.joined = None      # the Shelly hotspot it's on, if any
 
     def _run(self, args, timeout=60, check=True):
         if self.cancelled:
@@ -67,8 +69,14 @@ class Real:
         return out
 
     def scan(self):
-        out = self._run(['nmcli', '-t', '-e', 'yes', '-f', 'SSID,SIGNAL,SECURITY,FREQ', 'dev', 'wifi', 'list',
-                         'ifname', self.iface, '--rescan', 'yes'], timeout=30)
+        args = ['nmcli', '-t', '-e', 'yes', '-f', 'SSID,SIGNAL,SECURITY,FREQ', 'dev', 'wifi', 'list', 'ifname', self.iface, '--rescan']
+        try:
+            out = self._run(args + ['yes'], timeout=30)
+        except Err as e:
+            # NetworkManager can refuse a rescan straight after another; its latest list is then only seconds old.
+            if e.code == 'stopped':
+                raise
+            out = self._run(args + ['no'], timeout=15)
         best = {}
         for line in out.splitlines():
             parts = re.split(r'(?<!\\):', line)
@@ -111,9 +119,11 @@ class Real:
                 os.unlink(path)
         else:
             self._run(['nmcli', '--wait', wait, 'con', 'up', CON], timeout=int(wait) + 10)
+        self.joined = ssid
         return {'ssid': ssid}
 
     def disconnect(self):
+        self.joined = None
         subprocess.run(['nmcli', 'con', 'down', CON], capture_output=True)
         subprocess.run(['nmcli', 'con', 'delete', CON], capture_output=True)
 
@@ -252,6 +262,36 @@ class Station:
         self.lock = threading.Lock()           # one radio job at a time
         os.makedirs(state_dir, exist_ok=True)
         self.key_file = os.path.join(state_dir, 'key')
+        # Watching for new Shellys (Steven, 2026-11-08: "I like 3", "A, can we do more often than every 10 sec?"): while the
+        # app is asking (its Home screen is open), the Pi scans by itself every few seconds whenever it's idle, never while
+        # joined to a Shelly or within a few seconds of a real job, and keeps the latest list for the app's 'seen' call.
+        self.seen = None          # {'networks': [...], 'at': time}
+        self.asked = 0            # when the app last asked for 'seen'
+        self.last_job = 0         # when the app last used the radio
+        threading.Thread(target=self._watch, daemon=True).start()
+
+    WATCH_EVERY = 5               # seconds between scans while watching
+    WATCH_FOR = 15                # keep watching this long after the app last asked
+    QUIET_AFTER_JOB = 15          # don't scan this soon after a real job (between set-up steps)
+
+    def _watch(self):
+        while True:
+            time.sleep(0.5)
+            now = time.time()
+            if now - self.asked > self.WATCH_FOR or now - self.last_job < self.QUIET_AFTER_JOB:
+                continue
+            if self.seen and now - self.seen['at'] < self.WATCH_EVERY:
+                continue
+            if getattr(self.radio, 'joined', None) or not self.lock.acquire(blocking=False):
+                continue
+            try:
+                self.radio.cancelled = False
+                r = self.radio.scan()
+                self.seen = {'networks': r.get('networks', []), 'at': time.time()}
+            except Exception:
+                self.seen = {'networks': (self.seen or {}).get('networks', []), 'at': time.time()}
+            finally:
+                self.lock.release()
 
     def key(self):
         try:
@@ -270,7 +310,63 @@ class Station:
         return {'key': k}
 
     def hello(self):
-        return {'app': 'evolink-pi', 'version': VERSION, 'name': socket.gethostname(), 'paired': bool(self.key()), 'fake': self.fake}
+        return {'app': 'evolink-pi', 'version': self.version, 'name': socket.gethostname(), 'paired': bool(self.key()), 'fake': self.fake}
+
+    # ---------- Looking after the Pi from the app (Steven, 2026-11-08: "If we do idea 2 as well, can we update the pi with
+    # the app?", "Yes, build it with A") ----------
+    version = VERSION
+    latest = None           # the newest version on GitHub, checked at most hourly
+    latest_at = 0
+
+    def _latest(self):
+        if self.fake:
+            return getattr(self.radio, 'latest', None) or self.version
+        if time.time() - self.latest_at > 3600 or not self.latest:
+            try:
+                with urllib.request.urlopen(RAW + '/evolink-pi.py', timeout=8) as r:
+                    m = re.search(r"^VERSION = '([^']+)'", r.read().decode('utf-8', 'replace'), re.M)
+                self.latest = m.group(1) if m else None
+                self.latest_at = time.time()
+            except Exception:
+                pass
+        return self.latest
+
+    def status(self):
+        def read(path, default=None):
+            try:
+                with open(path) as f:
+                    return f.read().strip('\x00 \n')
+            except Exception:
+                return default
+        temp = read('/sys/class/thermal/thermal_zone0/temp')
+        up = read('/proc/uptime')
+        iface = getattr(self.radio, 'iface', 'wlan0')
+        wifi = 'pretend' if self.fake else ('ready' if os.path.exists(f'/sys/class/net/{iface}') else 'missing')
+        if self.fake:
+            temp, up = '48200', '93784.5'
+        return {'version': self.version, 'latest': self._latest(), 'name': socket.gethostname(),
+                'model': 'Pretend Pi' if self.fake else read('/proc/device-tree/model', 'Raspberry Pi'),
+                'tempC': round(int(temp) / 1000, 1) if temp and temp.isdigit() else None,
+                'uptimeS': int(float(up.split()[0])) if up else None, 'wifi': wifi, 'updating': bool(getattr(self, 'updating', 0))}
+
+    def update(self):
+        # The install line, run outside this service (systemd-run), so restarting the service doesn't stop it halfway.
+        # The pairing key in /var/lib/evolink-pi is kept, so the app stays paired.
+        self.updating = time.time()
+        if self.fake:
+            new = self._latest()
+            def later():
+                time.sleep(1.5)
+                self.version, self.updating = new, 0
+            threading.Thread(target=later, daemon=True).start()
+            return {'started': True}
+        subprocess.run(['systemctl', 'reset-failed', 'evolink-pi-update'], capture_output=True)
+        r = subprocess.run(['systemd-run', '--unit=evolink-pi-update', '--collect', '/bin/bash', '-c',
+                            f'curl -fsSL {RAW}/install.sh | bash'], capture_output=True, text=True)
+        if r.returncode != 0:
+            self.updating = 0
+            raise Err((r.stderr or r.stdout).strip() or 'Couldn\'t start the update', 'update')
+        return {'started': True}
 
     def call(self, op, b):
         r = self.radio
@@ -279,10 +375,25 @@ class Station:
             return {}
         if op == 'signal':
             return r.signal()
+        if self.fake and getattr(self.radio, 'old', False) and op in ('status', 'update', 'seen'):
+            raise Err('Unknown call ' + op, 'bad')     # pretending to be a Pi from before these calls
+        if op == 'status':
+            return self.status()
+        if op == 'update':
+            return self.update()
+        if op == 'seen':
+            self.asked = time.time()
+            if not self.seen:
+                return {'networks': [], 'age': None, 'watching': True}
+            return {'networks': self.seen['networks'], 'age': round(time.time() - self.seen['at'], 1), 'watching': True}
+        if op != 'scan':
+            self.last_job = time.time()
         with self.lock:
             r.cancelled = False
             if op == 'scan':
-                return r.scan()
+                res = r.scan()
+                self.seen = {'networks': res.get('networks', []), 'at': time.time()}
+                return res
             if op == 'connect':
                 return r.connect(b.get('ssid') or '', b.get('password') or '', b.get('timeoutMs', 30000))
             if op == 'disconnect':
@@ -332,7 +443,7 @@ def handler_for(station):
                     return self._send(200, dict(ok=True, **station.pair()))
                 if station.fake and self.path == '/api/fake/set':
                     for k, v in b.items():
-                        setattr(station.radio, k, v)
+                        setattr(station if k == 'version' else station.radio, k, v)
                     return self._send(200, {'ok': True})
                 if not station.key() or self.headers.get('X-Evolink-Key') != station.key():
                     return self._send(401, {'ok': False, 'error': 'Not paired with this app', 'code': 'unpaired'})
@@ -360,6 +471,8 @@ def main():
         print('Pairing reset: the next app to pair becomes the Pi\'s app.')
         return
     station = Station(Fake() if a.fake else Real(a.iface), a.state, a.fake)
+    if a.fake:
+        station.WATCH_EVERY, station.QUIET_AFTER_JOB = 1, 2   # quicker, for the app's tests
     srv = ThreadingHTTPServer(('0.0.0.0', a.port), handler_for(station))
     print(f'Evo Link Pi station {VERSION} on port {a.port}{" (pretend)" if a.fake else ""}', flush=True)
     try:

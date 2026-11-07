@@ -32,7 +32,8 @@ is used once, never saved) and pairs. The steps below are the same thing by hand
 3. **In the app:** Settings → Pi station → Find the Pi (or type the address), then Pair. Only that phone can use it after that.
 
 ## Update
-Run the same install line again.
+In the app: Settings → Pi station shows the Pi's version and **Update the Pi** when there's a newer one (from version
+0.3.0; an older Pi shows **Update over SSH** once instead). Or run the same install line again.
 
 ## If something's wrong
 - **See what it's doing:** `journalctl -u evolink-pi -f`
@@ -41,8 +42,10 @@ Run the same install line again.
 
 ## How it works
 `evolink-pi.py` (Python 3, nothing else to install) serves a small JSON API on port 8710: `hello` and `pair` without a key,
-then `scan`, `connect`, `disconnect`, `rpc`, `send`, `signal` and `cancel` with the key the app was given when it paired
+then `status`, `update`, `scan`, `seen`, `connect`, `disconnect`, `rpc`, `send`, `signal` and `cancel` with the key the app was given when it paired
 (header `X-Evolink-Key`; the first app to pair is the only one). Joining a hotspot uses its own NetworkManager connection,
 `evolink-shelly` (no default route, never connects by itself, deleted on leaving; the password goes in through a file only
-root can read). The hotspot password comes from the app with each join and is never kept on the Pi. `--fake` runs a pretend
+root can read). The hotspot password comes from the app with each join and is never kept on the Pi. While the app's Home screen is open (it calls `seen` every few seconds), the Pi scans by itself about every
+5 seconds when idle, never while joined to a Shelly or just after a job, so a newly powered Shelly shows up in the app
+without pressing scan. `--fake` runs a pretend
 Pi with made-up Shellys and printer, for testing the app.
