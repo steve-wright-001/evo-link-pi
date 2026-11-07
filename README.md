@@ -15,8 +15,9 @@ station → How to set up a Pi.)
 plugging the Pi in, then finds it, installs everything over SSH with the username and password you set in Imager (the password
 is used once, never saved) and pairs. The steps below are the same thing by hand.
 
-0. **Get onto the Pi:** put Raspberry Pi OS on its SD card with **Raspberry Pi Imager**. In Imager's settings, set the name to
-   `evolink`, pick a username and password, turn on **SSH**, and leave Wi-Fi blank. Start the Pi with its cable in, then from
+0. **Get onto the Pi:** put Raspberry Pi OS on its SD card with **Raspberry Pi Imager**. In Imager's **Customisation** pages:
+   Hostname `evolink`, Localisation your country, User a username and password, **Wi-Fi left empty** (Imager may fill in your computer's Wi-Fi name and password: delete both), Remote access **SSH on**
+   (password sign-in), Raspberry Pi Connect off. Start the Pi with its cable in, then from
    a computer (or an SSH app such as Termius on the phone):
    ```
    ssh yourname@evolink.local
