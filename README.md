@@ -18,6 +18,8 @@ station → How to set up a Pi.)
    ssh yourname@evolink.local
    ```
    and type your password. No SSH? Plug a keyboard and screen into the Pi instead.
+   **The quick way:** then in the app, Settings → Pi station → **Set up a new Pi for me**. It finds the Pi, does steps 1–3 over
+   SSH with the username and password you picked in Imager (the password is used once, never saved) and pairs. Or by hand:
 1. **Turn on the Pi's Wi-Fi:** `sudo raspi-config` → Localisation Options → WLAN Country → your country.
 2. **Install:**
    ```
